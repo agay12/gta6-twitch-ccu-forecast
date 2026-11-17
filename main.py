@@ -18,7 +18,7 @@
 #   3. The residuals e = (r - m) / s are pooled over every comparable and hour;
 #      their empirical quantiles at the case's levels capture the fat right
 #      tail (a launch can run far hotter than typical).
-#   4. Hour h's quantiles are p1 * exp(m(h) + s(h) * e_tau),
+#   4. Hour h's quantiles are p1 * exp(SHAPE_GAIN * m(h) + s(h) * TAIL[k] * e_tau),
 #      where p1 is the case's hour-1 print (>= 1), clamped to (0, 1e9] and made
 #      non-decreasing.
 
@@ -30,6 +30,12 @@ from datetime import datetime, timedelta
 
 INPUT_DIR = os.environ.get("MAKEFUN_INPUT_DIR", "/input")
 OUTPUT_DIR = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+
+# LOO-calibrated on the kit's practice comparables (eval_loo.py): the median
+# release-day shape under-runs the typical launch a little, so the shape is
+# lifted 10%; the extreme quantiles are widened 20% for the fat right tail.
+SHAPE_GAIN = 1.10
+TAIL_WIDEN = 1.20
 
 
 def parse_ts(s):
@@ -104,7 +110,7 @@ def forecast_case(case):
             hh = min(max(h, min(mu)), max(mu))
             m = mu.get(hh, mu[max(mu)])
             s = sd.get(hh, sd[max(sd)])
-            q = [p1 * math.exp(m + s * rq[t])
+            q = [p1 * math.exp(SHAPE_GAIN * m + s * TAIL_WIDEN * rq[t])
                  for t in (0.05, 0.25, 0.5, 0.75, 0.95)]
         else:
             q = [p1 * math.exp(z * 0.15 * math.sqrt(h - 1))
