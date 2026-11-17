@@ -6,25 +6,25 @@
 # hour-1 print and the case's `comparables` (past launches' hourly counts from
 # 14 days before their release day to 3 days after). Offline, stdlib only.
 #
-# Model (calibrated by leave-one-out on the comparables in the kit, where it
-# scores a mean pinball loss of ~0.57 on the log scale vs ~0.72 for the house
-# persistence baseline):
-#   1. For each comparable launch that has a count in hour 0 of its release day
-#      (the case's own hour-1 analog), take that hour as its anchor p0 and the
+# Model:
+#   1. For each comparable launch that has a count in hour 1 of its release day
+#      (the same hour the case knows), take that hour as its anchor p0 and the
 #      count of every release-day hour h as a log ratio r(h) = ln(v(h) / p0).
+#      Anchoring on hour 1 (not hour 0) makes the case's own hour-1 print the
+#      exact base of the shape, with no day-boundary offset between the two.
 #   2. Pool each hour's ratios with its neighbours (h-1, h, h+1) across all
 #      comparables; the pooled median m(h) is the shape of a launch day and the
 #      pooled MAD scale s(h) its spread, floored at 0.08 nats.
 #   3. The residuals e = (r - m) / s are pooled over every comparable and hour;
 #      their empirical quantiles at the case's levels capture the fat right
 #      tail (a launch can run far hotter than typical).
-#   4. Hour h's quantiles are p1 * exp(m(h) + s(h) * e_tau), where p1 is the
-#      case's hour-1 print (>= 1), clamped to (0, 1e9] and made non-decreasing.
+#   4. Hour h's quantiles are p1 * exp(m(h) + s(h) * e_tau),
+#      where p1 is the case's hour-1 print (>= 1), clamped to (0, 1e9] and made
+#      non-decreasing.
 
 import json
 import math
 import os
-import re
 import statistics
 from datetime import datetime, timedelta
 
@@ -36,31 +36,9 @@ def parse_ts(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def median(v):
-    return statistics.median(v)
-
-
 def mad_scale(v):
-    m = median(v)
-    return 1.4826 * median([abs(x - m) for x in v])
-
-
-def pooled(vals, weights=None):
-    """Weighted (unweighted ok) empirical quantiles on the log scale."""
-    pairs = sorted(zip(vals, weights if weights is not None else [1.0] * len(vals)))
-    total = sum(w for _, w in pairs)
-    out = []
-    for t in (0.05, 0.25, 0.5, 0.75, 0.95):
-        target = t * total
-        cum = 0.0
-        for v, w in pairs:
-            cum += w
-            if cum >= target - 1e-12:
-                out.append(v)
-                break
-        else:
-            out.append(pairs[-1][0])
-    return out
+    m = statistics.median(v)
+    return 1.4826 * statistics.median([abs(x - m) for x in v])
 
 
 def release_day_points(comp):
@@ -77,11 +55,11 @@ def release_day_points(comp):
 
 
 def build_model(comparables):
-    """log ratios per hour; anchor = the comparable's hour-0 count."""
-    ratios = []  # list of (hour, log-ratio) per comparable
+    """log ratios per hour; anchor = the comparable's hour-1 count."""
+    ratios = []  # list of {hour: log-ratio} per comparable
     for comp in comparables:
         pts = release_day_points(comp)
-        p0 = pts.get(0)
+        p0 = pts.get(1)
         if not p0 or p0 < 500 or len(pts) < 18:
             continue
         ratios.append({h: math.log(v / p0) for h, v in pts.items() if v > 0})
@@ -89,13 +67,12 @@ def build_model(comparables):
         return None
     # pooled stats per hour
     mu, sd = {}, {}
-    for h in range(1, 25):
+    for h in range(2, 25):
         vals = [r[c] for r in ratios for c in (h - 1, h, h + 1) if c in r]
         if len(vals) < 6:
             continue
-        mu[h] = median(vals)
-        s = mad_scale(vals)
-        sd[h] = max(s, 0.08)
+        mu[h] = statistics.median(vals)
+        sd[h] = max(mad_scale(vals), 0.08)
     if not mu:
         return None
     # standardized residuals, empirical quantiles
@@ -124,10 +101,11 @@ def forecast_case(case):
         h = int(row["hour"])
         if model:
             mu, sd, rq = model
-            hh = min(max(h, 2), max(mu))
+            hh = min(max(h, min(mu)), max(mu))
             m = mu.get(hh, mu[max(mu)])
             s = sd.get(hh, sd[max(sd)])
-            q = [p1 * math.exp(m + s * rq[t]) for t in (0.05, 0.25, 0.5, 0.75, 0.95)]
+            q = [p1 * math.exp(m + s * rq[t])
+                 for t in (0.05, 0.25, 0.5, 0.75, 0.95)]
         else:
             q = [p1 * math.exp(z * 0.15 * math.sqrt(h - 1))
                  for z in (-1.645, -0.674, 0.0, 0.674, 1.645)]
