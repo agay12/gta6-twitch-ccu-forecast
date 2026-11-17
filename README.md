@@ -17,29 +17,49 @@ from `/input` and writes `/output/<id>.out`:
 
 1. **Anchor** — the case's hour-1 print `p1` anchors the whole forecast.
 2. **Comparable shape** — every comparable launch in the case's `comparables`
-   that has a count in hour 0 of its own UTC release day contributes log
-   ratios `r(h) = ln(v(h) / v(0))` for each release-day hour. Launch days share
-   a shape: Europe unlocked at midnight local, a trough through the small
-   hours, a huge ramp once North America unlocks, a peak in the US evening,
-   then decay.
+   that has a count in hour 1 of its own UTC release day contributes log
+   ratios `r(h) = ln(v(h) / v(1))` for each release-day hour. Anchoring on the
+   same hour the case knows keeps the case's print the exact base of the
+   shape. Launch days share a shape: midnight unlocks country by country, a
+   trough through the small hours, a ramp as North America unlocks, a peak in
+   the US evening, then decay.
 3. **Smoothed location and spread** — each hour's ratios are pooled with their
    neighbours (h−1, h, h+1) across all comparables; the pooled median is the
    shape `m(h)` and the pooled MAD scale (floored at 0.08 nats) the spread
    `s(h)`.
 4. **Calibrated quantiles** — the standardized residuals are pooled over every
    comparable and hour; their empirical quantiles capture the fat right tail
-   (a launch can run far hotter than typical). Hour `h`'s quantile at level τ
-   is `p1 · exp(m(h) + s(h) · e_τ)`, clamped to (0, 1e9] and non-decreasing.
+   (a launch can run far hotter than typical). The shape is lifted 10%
+   (`SHAPE_GAIN`) and the 5%/95% residuals widened 20% (`TAIL_WIDEN`); both
+   values were chosen by the leave-one-out sweep below. Hour `h`'s quantile at
+   level τ is `p1 · exp(1.10 · m(h) + s(h) · 1.20 · e_τ)` for the outer
+   levels, clamped to (0, 1e9] and made non-decreasing.
 
-Everything is computed from the case file at run time — no fitted constants,
-no randomness, deterministic byte-for-byte output.
+Everything is computed from the case file at run time — no fitted constants
+beyond the two calibrated scalars, no randomness, deterministic byte-for-byte
+output. Without a usable comparable pool the program falls back to the house
+persistence shape `p1 · exp(z_τ · 0.15 · √(h−1))`.
 
 ## Validation
 
-Leave-one-out over the 34 usable comparables in the kit's practice cases:
-mean pinball loss **≈ 0.58** vs **≈ 0.72** for the house persistence baseline
-(the kit starter). All four practice cases produce valid output in well under
-a second per case.
+`eval_loo.py` treats each comparable launch as a pseudo-case: its hour-1 print
+is the known, hours 2..24 are the answer, the model is rebuilt from the other
+comparables only, and the loss is the contest's own pinball loss.
+
+| model | LOO loss (4070 items) |
+| --- | --- |
+| house persistence baseline (`p1 · exp(z · 0.15 · √(h−1))`) | 1.0014 |
+| hour-0 anchor (first version) | 0.7767 |
+| **hour-1 anchor + calibrated gain/tails (this entry)** | **0.7579** |
+
+Run it: `python3 eval_loo.py`. All four practice cases produce valid output in
+well under a second per case (`/output` files, 23 rows of 5 quantiles).
+
+A live data check on 2026-11-17 (two days before release), against the same
+public endpoint the house reads — `POST https://gql.twitch.tv/gql`,
+`game(id: "1867279146") { viewersCount broadcastersCount }` — returned
+`viewersCount 8072`, `broadcastersCount 226`: the category exists, is already
+live, and the id in the rules is right.
 
 ## Running
 
